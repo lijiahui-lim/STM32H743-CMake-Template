@@ -683,7 +683,7 @@ static void MX_FMC_Init(void)
   }
 
   /* USER CODE BEGIN FMC_Init 2 */
-
+  HAL_SDRAM_ProgramRefreshRate(&hsdram2, 824);
   /* USER CODE END FMC_Init 2 */
 }
 
