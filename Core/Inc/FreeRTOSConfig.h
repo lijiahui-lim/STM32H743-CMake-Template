@@ -69,7 +69,8 @@ extern uint32_t SystemCoreClock;
 #define configUSE_SB_COMPLETED_CALLBACK          ( 0 )
 #define configUSE_MINI_LIST_ITEM                ( 1 )
 #define configMINIMAL_STACK_SIZE                 ((uint16_t)128)
-#define configTOTAL_HEAP_SIZE                    ((size_t)15360)
+#define configTOTAL_HEAP_SIZE                    ((size_t)131072)
+#define configAPPLICATION_ALLOCATED_HEAP         1
 #define configMAX_TASK_NAME_LEN                  ( 16 )
 #define configHEAP_CLEAR_MEMORY_ON_FREE          0
 #define configUSE_TRACE_FACILITY                 1
@@ -154,6 +155,8 @@ See http://www.FreeRTOS.org/RTOS-Cortex-M3-M4.html. */
 header file. */
 /* USER CODE BEGIN 1 */
 #define configASSERT( x ) if ((x) == 0) {taskDISABLE_INTERRUPTS(); for( ;; );}
+#define configCHECK_FOR_STACK_OVERFLOW  2
+#define configUSE_MALLOC_FAILED_HOOK    1
 /* USER CODE END 1 */
 
 /* Definitions that map the FreeRTOS port interrupt handlers to their CMSIS

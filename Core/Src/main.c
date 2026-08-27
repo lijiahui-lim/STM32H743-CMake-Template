@@ -24,7 +24,11 @@
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
-
+#include "lvgl.h"
+#include "lvgl/drivers/display/lv_st_ltdc.h"
+#include "demos/lv_demos.h"
+#include "yaffs_osglue.h"
+#include "task.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -65,10 +69,14 @@ SDRAM_HandleTypeDef hsdram2;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 128 * 4,
+  .stack_size = 512 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
+/* FreeRTOS heap must live in RAM_D2 (DTCMRAM is too small); heap_4 does not
+   require zero-initialized memory, so a NOLOAD custom section is fine. */
+__attribute__((section(".ram_d2_heap")))
+uint8_t ucHeap[configTOTAL_HEAP_SIZE];
 
 /* USER CODE END PV */
 
@@ -104,7 +112,26 @@ int main(void)
 {
 
   /* USER CODE BEGIN 1 */
-
+  /* FMC NAND mapped at 0x80000000 must be Device/non-cacheable. Configured
+     here instead of inside MPU_Config() because CubeMX regenerates that whole
+     function; region registers persist, so MPU_Config() re-enabling the MPU
+     keeps this setting. */
+  {
+    MPU_Region_InitTypeDef nand_region = {0};
+    HAL_MPU_Disable();
+    nand_region.Enable = MPU_REGION_ENABLE;
+    nand_region.Number = MPU_REGION_NUMBER2;
+    nand_region.BaseAddress = 0x80000000;
+    nand_region.Size = MPU_REGION_SIZE_256MB;
+    nand_region.SubRegionDisable = 0x00;
+    nand_region.TypeExtField = MPU_TEX_LEVEL0;
+    nand_region.AccessPermission = MPU_REGION_FULL_ACCESS;
+    nand_region.DisableExec = MPU_INSTRUCTION_ACCESS_DISABLE;
+    nand_region.IsShareable = MPU_ACCESS_NOT_SHAREABLE;
+    nand_region.IsCacheable = MPU_ACCESS_NOT_CACHEABLE;
+    nand_region.IsBufferable = MPU_ACCESS_NOT_BUFFERABLE;
+    HAL_MPU_ConfigRegion(&nand_region);
+  }
   /* USER CODE END 1 */
 
   /* MPU Configuration--------------------------------------------------------*/
@@ -149,7 +176,35 @@ int main(void)
   MX_USB_OTG_HS_PCD_Init();
   MX_LTDC_Init();
   /* USER CODE BEGIN 2 */
+  /* LCD backlight: PD13 */
+  __HAL_RCC_GPIOD_CLK_ENABLE();
+  GPIO_InitTypeDef gpio = {0};
+  gpio.Pin = GPIO_PIN_13;
+  gpio.Mode = GPIO_MODE_OUTPUT_PP;
+  gpio.Pull = GPIO_NOPULL;
+  gpio.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOD, &gpio);
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, GPIO_PIN_SET);
 
+  /* Test: fill framebuffer with red/green/blue stripes to verify SDRAM + LTDC */
+  #define FB_ADDR1  0xD0000000
+  #define FB_ADDR2  (FB_ADDR1 + 800 * 480 * 2)
+  volatile uint16_t *fb = (volatile uint16_t *)FB_ADDR1;
+  for (int y = 0; y < 480; y++) {
+      uint16_t color;
+      if (y < 160)      color = 0xF800; /* RGB565 red */
+      else if (y < 320) color = 0x07E0; /* RGB565 green */
+      else              color = 0x001F; /* RGB565 blue */
+      for (int x = 0; x < 800; x++) {
+          fb[y * 800 + x] = color;
+      }
+  }
+  SCB_CleanDCache_by_Addr((uint32_t *)FB_ADDR1, 800 * 480 * 2);
+
+  /* LVGL init */
+  lv_init();
+  lv_st_ltdc_create_direct((void *)FB_ADDR1, (void *)FB_ADDR2, 0);
+  lv_demo_widgets();
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -284,12 +339,12 @@ void PeriphCommonClock_Config(void)
   /** Initializes the peripherals clock
   */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_LTDC;
-  PeriphClkInitStruct.PLL3.PLL3M = 5;
-  PeriphClkInitStruct.PLL3.PLL3N = 48;
+  PeriphClkInitStruct.PLL3.PLL3M = 25;
+  PeriphClkInitStruct.PLL3.PLL3N = 384;
   PeriphClkInitStruct.PLL3.PLL3P = 2;
-  PeriphClkInitStruct.PLL3.PLL3Q = 5;
-  PeriphClkInitStruct.PLL3.PLL3R = 5;
-  PeriphClkInitStruct.PLL3.PLL3RGE = RCC_PLL3VCIRANGE_2;
+  PeriphClkInitStruct.PLL3.PLL3Q = 8;
+  PeriphClkInitStruct.PLL3.PLL3R = 11;
+  PeriphClkInitStruct.PLL3.PLL3RGE = RCC_PLL3VCIRANGE_0;
   PeriphClkInitStruct.PLL3.PLL3VCOSEL = RCC_PLL3VCOWIDE;
   PeriphClkInitStruct.PLL3.PLL3FRACN = 0;
   PeriphClkInitStruct.UsbClockSelection = RCC_USBCLKSOURCE_PLL3;
@@ -334,7 +389,8 @@ static void MX_DMA2D_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN DMA2D_Init 2 */
-
+  HAL_NVIC_SetPriority(DMA2D_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(DMA2D_IRQn);
   /* USER CODE END DMA2D_Init 2 */
 
 }
@@ -361,7 +417,7 @@ static void MX_LTDC_Init(void)
   hltdc.Init.HSPolarity = LTDC_HSPOLARITY_AL;
   hltdc.Init.VSPolarity = LTDC_VSPOLARITY_AL;
   hltdc.Init.DEPolarity = LTDC_DEPOLARITY_AL;
-  hltdc.Init.PCPolarity = LTDC_PCPOLARITY_IIPC;
+  hltdc.Init.PCPolarity = LTDC_PCPOLARITY_IPC;
   hltdc.Init.HorizontalSync = 0;
   hltdc.Init.VerticalSync = 2;
   hltdc.Init.AccumulatedHBP = 46;
@@ -416,7 +472,17 @@ static void MX_LTDC_Init(void)
     Error_Handler();
   }
   /* USER CODE BEGIN LTDC_Init 2 */
-
+  /* Configure layer 0 for LVGL: 800x480 RGB565, framebuffer in SDRAM */
+  hltdc.LayerCfg[0].WindowX0 = 0;
+  hltdc.LayerCfg[0].WindowX1 = 800;
+  hltdc.LayerCfg[0].WindowY0 = 0;
+  hltdc.LayerCfg[0].WindowY1 = 480;
+  hltdc.LayerCfg[0].PixelFormat = LTDC_PIXEL_FORMAT_RGB565;
+  hltdc.LayerCfg[0].Alpha = 255;
+  hltdc.LayerCfg[0].FBStartAdress = 0xD0000000;
+  hltdc.LayerCfg[0].ImageWidth = 800;
+  hltdc.LayerCfg[0].ImageHeight = 480;
+  HAL_LTDC_ConfigLayer(&hltdc, &hltdc.LayerCfg[0], 0);
   /* USER CODE END LTDC_Init 2 */
 
 }
@@ -683,6 +749,30 @@ static void MX_FMC_Init(void)
   }
 
   /* USER CODE BEGIN FMC_Init 2 */
+
+  /* SDRAM initialization command sequence */
+  FMC_SDRAM_CommandTypeDef cmd = {0};
+
+  cmd.CommandMode  = FMC_SDRAM_CMD_CLK_ENABLE;
+  cmd.CommandTarget = FMC_SDRAM_CMD_TARGET_BANK2;
+  HAL_SDRAM_SendCommand(&hsdram2, &cmd, 0xFFFF);
+  HAL_Delay(1);
+
+  cmd.CommandMode  = FMC_SDRAM_CMD_PALL;
+  cmd.CommandTarget = FMC_SDRAM_CMD_TARGET_BANK2;
+  HAL_SDRAM_SendCommand(&hsdram2, &cmd, 0xFFFF);
+
+  cmd.CommandMode     = FMC_SDRAM_CMD_AUTOREFRESH_MODE;
+  cmd.CommandTarget   = FMC_SDRAM_CMD_TARGET_BANK2;
+  cmd.AutoRefreshNumber = 8;
+  HAL_SDRAM_SendCommand(&hsdram2, &cmd, 0xFFFF);
+
+  cmd.CommandMode  = FMC_SDRAM_CMD_LOAD_MODE;
+  cmd.CommandTarget = FMC_SDRAM_CMD_TARGET_BANK2;
+  cmd.AutoRefreshNumber = 1;
+  cmd.ModeRegisterDefinition = 0x0230;
+  HAL_SDRAM_SendCommand(&hsdram2, &cmd, 0xFFFF);
+
   HAL_SDRAM_ProgramRefreshRate(&hsdram2, 824);
   /* USER CODE END FMC_Init 2 */
 }
@@ -717,7 +807,24 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
+void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
+{
+  /* Attach a debugger here; xTask/pcTaskName identify the offending task. */
+  (void)xTask;
+  (void)pcTaskName;
+  __disable_irq();
+  while (1)
+  {
+  }
+}
 
+void vApplicationMallocFailedHook(void)
+{
+  __disable_irq();
+  while (1)
+  {
+  }
+}
 /* USER CODE END 4 */
 
 /* USER CODE BEGIN Header_StartDefaultTask */
@@ -730,10 +837,13 @@ static void MX_GPIO_Init(void)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
+  yaffs_mount_nand();
+
   /* Infinite loop */
   for(;;)
   {
-    osDelay(1);
+    lv_timer_handler();
+    osDelay(5);
   }
   /* USER CODE END 5 */
 }
@@ -777,6 +887,7 @@ void MPU_Config(void)
   MPU_InitStruct.IsBufferable = MPU_ACCESS_BUFFERABLE;
 
   HAL_MPU_ConfigRegion(&MPU_InitStruct);
+
   /* Enables the MPU */
   HAL_MPU_Enable(MPU_PRIVILEGED_DEFAULT);
 

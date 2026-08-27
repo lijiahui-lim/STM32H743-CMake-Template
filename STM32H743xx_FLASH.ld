@@ -241,7 +241,14 @@ SECTIONS
     . = ALIGN(8);
   } >DTCMRAM
 
-
+  /* FreeRTOS heap placed in RAM_D2 */
+  .ram_d2_heap (NOLOAD) :
+  {
+    . = ALIGN(4);
+    *(.ram_d2_heap)
+    *(.ram_d2_heap*)
+    . = ALIGN(4);
+  } >RAM_D2
 
   /* Remove information from the standard libraries */
   /DISCARD/ :

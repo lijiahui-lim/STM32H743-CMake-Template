@@ -8,3 +8,5 @@ build/
 *.su
 .vscode/
 .idea/
+lvgl/
+yaffs2/

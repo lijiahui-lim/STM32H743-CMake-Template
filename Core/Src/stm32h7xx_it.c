@@ -191,4 +191,11 @@ void OTG_HS_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
+extern DMA2D_HandleTypeDef hdma2d;
+
+void DMA2D_IRQHandler(void)
+{
+  HAL_DMA2D_IRQHandler(&hdma2d);
+}
+
 /* USER CODE END 1 */

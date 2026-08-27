@@ -53,7 +53,7 @@ extern "C" {
 void Error_Handler(void);
 
 /* USER CODE BEGIN EFP */
-
+extern NAND_HandleTypeDef hnand1;
 /* USER CODE END EFP */
 
 /* Private defines -----------------------------------------------------------*/
