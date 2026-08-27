@@ -60,8 +60,10 @@
 
 /** Place the pool at a fixed address instead of allocating it as a normal array.
  *  0: unused.
+ *  Must stay clear of the two 800x480 RGB565 framebuffers:
+ *  FB1 0xD0000000-0xD00BB800, FB2 0xD00C0000-0xD017B800.
  */
-#define LV_MEM_ADR 0xD0177000
+#define LV_MEM_ADR 0xD0180000
 
 #endif /*LV_USE_STDLIB_MALLOC == LV_STDLIB_BUILTIN*/
 

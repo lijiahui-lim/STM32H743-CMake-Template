@@ -22,6 +22,8 @@
 #include "stm32h7xx_it.h"
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
+#include "lvgl.h"
+#include "src/draw/dma2d/lv_draw_dma2d.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -195,7 +197,17 @@ extern DMA2D_HandleTypeDef hdma2d;
 
 void DMA2D_IRQHandler(void)
 {
-  HAL_DMA2D_IRQHandler(&hdma2d);
+  /* LVGL's DMA2D renderer (raw-register, interrupt mode) blocks until this
+     handler runs; the HAL hdma2d handle is not used for those transfers. */
+  DMA2D->IFCR = 0x3FU;
+  lv_draw_dma2d_transfer_complete_interrupt_handler();
+}
+
+extern LTDC_HandleTypeDef hltdc;
+
+void LTDC_IRQHandler(void)
+{
+  HAL_LTDC_IRQHandler(&hltdc);
 }
 
 /* USER CODE END 1 */

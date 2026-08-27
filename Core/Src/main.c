@@ -28,6 +28,7 @@
 #include "lvgl/drivers/display/lv_st_ltdc.h"
 #include "demos/lv_demos.h"
 #include "yaffs_osglue.h"
+#include "touch.h"
 #include "task.h"
 /* USER CODE END Includes */
 
@@ -38,7 +39,9 @@
 
 /* Private define ------------------------------------------------------------*/
 /* USER CODE BEGIN PD */
-
+/* Framebuffers in SDRAM, RGB565 800x480 */
+#define FB_ADDR1  0xD0000000
+#define FB_ADDR2  (FB_ADDR1 + 800 * 480 * 2)
 /* USER CODE END PD */
 
 /* Private macro -------------------------------------------------------------*/
@@ -49,6 +52,8 @@
 /* Private variables ---------------------------------------------------------*/
 
 DMA2D_HandleTypeDef hdma2d;
+
+I2C_HandleTypeDef hi2c2;
 
 LTDC_HandleTypeDef hltdc;
 
@@ -69,7 +74,7 @@ SDRAM_HandleTypeDef hsdram2;
 osThreadId_t defaultTaskHandle;
 const osThreadAttr_t defaultTask_attributes = {
   .name = "defaultTask",
-  .stack_size = 512 * 4,
+  .stack_size = 6144 * 4,
   .priority = (osPriority_t) osPriorityNormal,
 };
 /* USER CODE BEGIN PV */
@@ -78,6 +83,12 @@ const osThreadAttr_t defaultTask_attributes = {
 __attribute__((section(".ram_d2_heap")))
 uint8_t ucHeap[configTOTAL_HEAP_SIZE];
 
+osThreadId_t mountTaskHandle;
+const osThreadAttr_t mountTask_attributes = {
+  .name = "mountTask",
+  .stack_size = 2048 * 4,
+  .priority = (osPriority_t) osPriorityBelowNormal,
+};
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -88,6 +99,7 @@ static void MX_GPIO_Init(void);
 static void MX_FMC_Init(void);
 static void MX_QUADSPI_Init(void);
 static void MX_USART1_UART_Init(void);
+static void MX_I2C2_Init(void);
 static void MX_DMA2D_Init(void);
 static void MX_RNG_Init(void);
 static void MX_RTC_Init(void);
@@ -96,7 +108,7 @@ static void MX_LTDC_Init(void);
 void StartDefaultTask(void *argument);
 
 /* USER CODE BEGIN PFP */
-
+void StartMountTask(void *argument);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
@@ -161,7 +173,10 @@ int main(void)
   PeriphCommonClock_Config();
 
   /* USER CODE BEGIN SysInit */
-
+  /* RAM_D2 hosts the FreeRTOS heap (.ram_d2_heap) */
+  __HAL_RCC_D2SRAM1_CLK_ENABLE();
+  __HAL_RCC_D2SRAM2_CLK_ENABLE();
+  __HAL_RCC_D2SRAM3_CLK_ENABLE();
   /* USER CODE END SysInit */
 
   /* Initialize all configured peripherals */
@@ -169,6 +184,7 @@ int main(void)
   MX_FMC_Init();
   MX_QUADSPI_Init();
   MX_USART1_UART_Init();
+  MX_I2C2_Init();
   MX_DMA2D_Init();
   MX_RNG_Init();
   MX_RTC_Init();
@@ -176,7 +192,7 @@ int main(void)
   MX_USB_OTG_HS_PCD_Init();
   MX_LTDC_Init();
   /* USER CODE BEGIN 2 */
-  /* LCD backlight: PD13 */
+  /* LCD backlight: PD13, stays OFF until the first LVGL frame is rendered */
   __HAL_RCC_GPIOD_CLK_ENABLE();
   GPIO_InitTypeDef gpio = {0};
   gpio.Pin = GPIO_PIN_13;
@@ -184,27 +200,7 @@ int main(void)
   gpio.Pull = GPIO_NOPULL;
   gpio.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOD, &gpio);
-  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, GPIO_PIN_SET);
-
-  /* Test: fill framebuffer with red/green/blue stripes to verify SDRAM + LTDC */
-  #define FB_ADDR1  0xD0000000
-  #define FB_ADDR2  (FB_ADDR1 + 800 * 480 * 2)
-  volatile uint16_t *fb = (volatile uint16_t *)FB_ADDR1;
-  for (int y = 0; y < 480; y++) {
-      uint16_t color;
-      if (y < 160)      color = 0xF800; /* RGB565 red */
-      else if (y < 320) color = 0x07E0; /* RGB565 green */
-      else              color = 0x001F; /* RGB565 blue */
-      for (int x = 0; x < 800; x++) {
-          fb[y * 800 + x] = color;
-      }
-  }
-  SCB_CleanDCache_by_Addr((uint32_t *)FB_ADDR1, 800 * 480 * 2);
-
-  /* LVGL init */
-  lv_init();
-  lv_st_ltdc_create_direct((void *)FB_ADDR1, (void *)FB_ADDR2, 0);
-  lv_demo_widgets();
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, GPIO_PIN_RESET);
   /* USER CODE END 2 */
 
   /* Init scheduler */
@@ -231,7 +227,7 @@ int main(void)
   defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
 
   /* USER CODE BEGIN RTOS_THREADS */
-  /* add threads, ... */
+  mountTaskHandle = osThreadNew(StartMountTask, NULL, &mountTask_attributes);
   /* USER CODE END RTOS_THREADS */
 
   /* USER CODE BEGIN RTOS_EVENTS */
@@ -273,25 +269,25 @@ void SystemClock_Config(void)
 
   while(!__HAL_PWR_GET_FLAG(PWR_FLAG_VOSRDY)) {}
 
-  /** Configure LSE Drive Capability
-  */
+  /* RTC runs from LSI: no 32.768kHz crystal is fitted on this board, and
+     waiting on LSE here would fail into Error_Handler() before any display
+     init runs. */
   HAL_PWR_EnableBkUpAccess();
-  __HAL_RCC_LSEDRIVE_CONFIG(RCC_LSEDRIVE_HIGH);
 
   /** Initializes the RCC Oscillators according to the specified parameters
   * in the RCC_OscInitTypeDef structure.
   */
-  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_HSE
-                              |RCC_OSCILLATORTYPE_LSE;
+  RCC_OscInitStruct.OscillatorType = RCC_OSCILLATORTYPE_HSI48|RCC_OSCILLATORTYPE_LSI
+                              |RCC_OSCILLATORTYPE_HSE;
   RCC_OscInitStruct.HSEState = RCC_HSE_ON;
-  RCC_OscInitStruct.LSEState = RCC_LSE_ON;
+  RCC_OscInitStruct.LSIState = RCC_LSI_ON;
   RCC_OscInitStruct.HSI48State = RCC_HSI48_ON;
   RCC_OscInitStruct.PLL.PLLState = RCC_PLL_ON;
   RCC_OscInitStruct.PLL.PLLSource = RCC_PLLSOURCE_HSE;
   RCC_OscInitStruct.PLL.PLLM = 5;
   RCC_OscInitStruct.PLL.PLLN = 192;
   RCC_OscInitStruct.PLL.PLLP = 2;
-  RCC_OscInitStruct.PLL.PLLQ = 15;
+  RCC_OscInitStruct.PLL.PLLQ = 20;
   RCC_OscInitStruct.PLL.PLLR = 2;
   RCC_OscInitStruct.PLL.PLLRGE = RCC_PLL1VCIRANGE_2;
   RCC_OscInitStruct.PLL.PLLVCOSEL = RCC_PLL1VCOWIDE;
@@ -322,10 +318,6 @@ void SystemClock_Config(void)
   /** Enables the Clock Security System
   */
   HAL_RCC_EnableCSS();
-
-  /** Enables the Clock Security System
-  */
-  HAL_RCCEx_EnableLSECSS();
 }
 
 /**
@@ -339,15 +331,18 @@ void PeriphCommonClock_Config(void)
   /** Initializes the peripherals clock
   */
   PeriphClkInitStruct.PeriphClockSelection = RCC_PERIPHCLK_USB|RCC_PERIPHCLK_LTDC;
+  /* LTDC pixel clock for 60Hz: (386 + 5710/8192)MHz / 14 = 27.6212MHz;
+     27.6212MHz / (887 * 519) = 60.00Hz */
   PeriphClkInitStruct.PLL3.PLL3M = 25;
-  PeriphClkInitStruct.PLL3.PLL3N = 384;
+  PeriphClkInitStruct.PLL3.PLL3N = 386;
   PeriphClkInitStruct.PLL3.PLL3P = 2;
   PeriphClkInitStruct.PLL3.PLL3Q = 8;
-  PeriphClkInitStruct.PLL3.PLL3R = 11;
+  PeriphClkInitStruct.PLL3.PLL3R = 14;
   PeriphClkInitStruct.PLL3.PLL3RGE = RCC_PLL3VCIRANGE_0;
   PeriphClkInitStruct.PLL3.PLL3VCOSEL = RCC_PLL3VCOWIDE;
-  PeriphClkInitStruct.PLL3.PLL3FRACN = 0;
-  PeriphClkInitStruct.UsbClockSelection = RCC_USBCLKSOURCE_PLL3;
+  PeriphClkInitStruct.PLL3.PLL3FRACN = 5710;
+  /* USB now from PLL1Q (48MHz exact); PLL3 VCO is no longer 384MHz */
+  PeriphClkInitStruct.UsbClockSelection = RCC_USBCLKSOURCE_PLL;
   if (HAL_RCCEx_PeriphCLKConfig(&PeriphClkInitStruct) != HAL_OK)
   {
     Error_Handler();
@@ -392,6 +387,54 @@ static void MX_DMA2D_Init(void)
   HAL_NVIC_SetPriority(DMA2D_IRQn, 6, 0);
   HAL_NVIC_EnableIRQ(DMA2D_IRQn);
   /* USER CODE END DMA2D_Init 2 */
+
+}
+
+/**
+  * @brief I2C2 Initialization Function (GT1151 touch controller)
+  * @param None
+  * @retval None
+  */
+static void MX_I2C2_Init(void)
+{
+
+  /* USER CODE BEGIN I2C2_Init 0 */
+
+  /* USER CODE END I2C2_Init 0 */
+
+  /* USER CODE BEGIN I2C2_Init 1 */
+
+  /* USER CODE END I2C2_Init 1 */
+  hi2c2.Instance = I2C2;
+  hi2c2.Init.Timing = 0x90913232;
+  hi2c2.Init.OwnAddress1 = 0;
+  hi2c2.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
+  hi2c2.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
+  hi2c2.Init.OwnAddress2 = 0;
+  hi2c2.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
+  hi2c2.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
+  hi2c2.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
+  if (HAL_I2C_Init(&hi2c2) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Analogue filter
+  */
+  if (HAL_I2CEx_ConfigAnalogFilter(&hi2c2, I2C_ANALOGFILTER_ENABLE) != HAL_OK)
+  {
+    Error_Handler();
+  }
+
+  /** Configure Digital filter
+  */
+  if (HAL_I2CEx_ConfigDigitalFilter(&hi2c2, 0) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN I2C2_Init 2 */
+
+  /* USER CODE END I2C2_Init 2 */
 
 }
 
@@ -483,6 +526,11 @@ static void MX_LTDC_Init(void)
   hltdc.LayerCfg[0].ImageWidth = 800;
   hltdc.LayerCfg[0].ImageHeight = 480;
   HAL_LTDC_ConfigLayer(&hltdc, &hltdc.LayerCfg[0], 0);
+  /* The LVGL LTDC driver uses the register-reload interrupt to sync
+     framebuffer swaps. Priority 6 is at or below the FreeRTOS max-syscall
+     priority (5), which the ISR callbacks require. */
+  HAL_NVIC_SetPriority(LTDC_IRQn, 6, 0);
+  HAL_NVIC_EnableIRQ(LTDC_IRQn);
   /* USER CODE END LTDC_Init 2 */
 
 }
@@ -570,7 +618,7 @@ static void MX_RTC_Init(void)
   hrtc.Instance = RTC;
   hrtc.Init.HourFormat = RTC_HOURFORMAT_24;
   hrtc.Init.AsynchPrediv = 127;
-  hrtc.Init.SynchPrediv = 255;
+  hrtc.Init.SynchPrediv = 249;
   hrtc.Init.OutPut = RTC_OUTPUT_DISABLE;
   hrtc.Init.OutPutPolarity = RTC_OUTPUT_POLARITY_HIGH;
   hrtc.Init.OutPutType = RTC_OUTPUT_TYPE_OPENDRAIN;
@@ -774,6 +822,16 @@ static void MX_FMC_Init(void)
   HAL_SDRAM_SendCommand(&hsdram2, &cmd, 0xFFFF);
 
   HAL_SDRAM_ProgramRefreshRate(&hsdram2, 824);
+
+  /* Clear the framebuffers so LTDC displays black instead of SDRAM power-up
+     garbage from the moment it starts scanning (before LVGL is up). */
+  for (int i = 0; i < 2; i++) {
+      uint32_t *fb = (uint32_t *)(FB_ADDR1 + i * (800 * 480 * 2));
+      for (uint32_t j = 0; j < (800 * 480 * 2) / 4; j++) {
+          fb[j] = 0;
+      }
+      SCB_CleanDCache_by_Addr((uint32_t *)fb, 800 * 480 * 2);
+  }
   /* USER CODE END FMC_Init 2 */
 }
 
@@ -784,6 +842,8 @@ static void MX_FMC_Init(void)
   */
 static void MX_GPIO_Init(void)
 {
+  GPIO_InitTypeDef GPIO_InitStruct = {0};
+
   /* USER CODE BEGIN MX_GPIO_Init_1 */
 
   /* USER CODE END MX_GPIO_Init_1 */
@@ -801,12 +861,38 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
+  /*Configure GPIO pin : PG3 (Touch_INT) */
+  GPIO_InitStruct.Pin = GPIO_PIN_3;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PG7 (Touch_RST) */
+  GPIO_InitStruct.Pin = GPIO_PIN_7;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_PULLDOWN;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOG, &GPIO_InitStruct);
+  HAL_GPIO_WritePin(GPIOG, GPIO_PIN_7, GPIO_PIN_RESET);
+
   /* USER CODE BEGIN MX_GPIO_Init_2 */
 
   /* USER CODE END MX_GPIO_Init_2 */
 }
 
 /* USER CODE BEGIN 4 */
+/* NAND mount can take a long time (or effectively never finish if no NAND is
+   fitted), so it runs here instead of blocking the LVGL task. */
+void StartMountTask(void *argument)
+{
+  (void)argument;
+  yaffs_mount_nand();
+  for (;;)
+  {
+    osDelay(1000);
+  }
+}
+
 void vApplicationStackOverflowHook(TaskHandle_t xTask, char *pcTaskName)
 {
   /* Attach a debugger here; xTask/pcTaskName identify the offending task. */
@@ -837,7 +923,22 @@ void vApplicationMallocFailedHook(void)
 void StartDefaultTask(void *argument)
 {
   /* USER CODE BEGIN 5 */
-  yaffs_mount_nand();
+  /* LVGL must be initialized after the kernel is running: the LTDC driver
+     creates CMSIS-RTOS2 sync objects. The tick callback must be registered
+     AFTER lv_init(): lv_init() zeroes LVGL's global state, which would
+     otherwise wipe the callback and freeze LVGL's tick (no timer would ever
+     fire again). */
+  lv_init();
+  lv_tick_set_cb(HAL_GetTick);
+  lv_st_ltdc_create_direct((void *)FB_ADDR1, (void *)FB_ADDR2, 0);
+  Touch_Init();
+  Touch_CreateLvglIndev();
+  lv_demo_widgets();
+
+  /* Render the first frame, then turn the backlight on so the panel only
+     ever lights up with valid content. */
+  lv_timer_handler();
+  HAL_GPIO_WritePin(GPIOD, GPIO_PIN_13, GPIO_PIN_SET);
 
   /* Infinite loop */
   for(;;)
