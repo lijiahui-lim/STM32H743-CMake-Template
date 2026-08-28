@@ -11,7 +11,7 @@ extern I2C_HandleTypeDef hi2c2;
 /* With INT idle, the status register is only polled once every
    TOUCH_POLL_DIV indev reads as a safety net: it catches events if an EXTI
    edge was missed and re-arms INT (the status read clears the buffer flag). */
-#define TOUCH_POLL_DIV 5
+#define TOUCH_POLL_DIV    5
 
 static uint8_t gt_addr = GT1151_ADDR;
 
@@ -24,14 +24,14 @@ static TouchPoint_t last_point;
 
 static HAL_StatusTypeDef GT1151_WriteReg(uint16_t reg, uint8_t *data, uint16_t len)
 {
-    return HAL_I2C_Mem_Write(&hi2c2, gt_addr << 1, reg,
-                             I2C_MEMADD_SIZE_16BIT, data, len, GT_I2C_TIMEOUT_MS);
+    return HAL_I2C_Mem_Write(&hi2c2, gt_addr << 1, reg, I2C_MEMADD_SIZE_16BIT, data, len,
+                             GT_I2C_TIMEOUT_MS);
 }
 
 static HAL_StatusTypeDef GT1151_ReadReg(uint16_t reg, uint8_t *data, uint16_t len)
 {
-    return HAL_I2C_Mem_Read(&hi2c2, gt_addr << 1, reg,
-                            I2C_MEMADD_SIZE_16BIT, data, len, GT_I2C_TIMEOUT_MS);
+    return HAL_I2C_Mem_Read(&hi2c2, gt_addr << 1, reg, I2C_MEMADD_SIZE_16BIT, data, len,
+                            GT_I2C_TIMEOUT_MS);
 }
 
 static void Touch_Reset(uint8_t int_level)
@@ -45,8 +45,7 @@ static void Touch_Reset(uint8_t int_level)
     GPIO_InitStruct.Pull = GPIO_PULLDOWN;
     GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_HIGH;
     HAL_GPIO_Init(TOUCH_INT_PORT, &GPIO_InitStruct);
-    HAL_GPIO_WritePin(TOUCH_INT_PORT, TOUCH_INT_PIN,
-                      int_level ? GPIO_PIN_SET : GPIO_PIN_RESET);
+    HAL_GPIO_WritePin(TOUCH_INT_PORT, TOUCH_INT_PIN, int_level ? GPIO_PIN_SET : GPIO_PIN_RESET);
 
     /* Double reset sequence (reference design) */
     HAL_GPIO_WritePin(TOUCH_RST_PORT, TOUCH_RST_PIN, GPIO_PIN_RESET);
@@ -124,15 +123,15 @@ int8_t Touch_GetPoints(TouchPoint_t *points, uint8_t max_points)
         return 0;
 
     count = status & 0x0F;
-    if (count > max_points) count = max_points;
-    if (count > TOUCH_MAX_POINTS) count = TOUCH_MAX_POINTS;
+    if (count > max_points)
+        count = max_points;
+    if (count > TOUCH_MAX_POINTS)
+        count = TOUCH_MAX_POINTS;
 
-    if (count > 0)
-    {
+    if (count > 0) {
         if (GT1151_ReadReg(GT_REG_POINT1, buf, count * GT_REG_POINT_SIZE) != HAL_OK)
             return -1;
-        for (uint8_t i = 0; i < count; i++)
-        {
+        for (uint8_t i = 0; i < count; i++) {
             uint8_t *p = &buf[i * GT_REG_POINT_SIZE];
             points[i].id = p[0] & 0x0F;
             points[i].x = (uint16_t)(p[1]) | ((uint16_t)(p[2]) << 8);
@@ -173,7 +172,7 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
     data->point.y = last_point.y;
 }
 
-lv_indev_t * Touch_CreateLvglIndev(void)
+lv_indev_t *Touch_CreateLvglIndev(void)
 {
     lv_indev_t *indev = lv_indev_create();
     if (indev == NULL)

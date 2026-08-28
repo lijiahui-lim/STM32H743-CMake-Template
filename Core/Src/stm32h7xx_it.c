@@ -61,7 +61,8 @@ extern PCD_HandleTypeDef hpcd_USB_OTG_HS;
 extern TIM_HandleTypeDef htim5;
 
 /* USER CODE BEGIN EV */
-
+extern LTDC_HandleTypeDef hltdc;
+extern DMA2D_HandleTypeDef hdma2d;
 /* USER CODE END EV */
 
 /******************************************************************************/
@@ -201,8 +202,6 @@ void EXTI3_IRQHandler(void)
   HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_3);
 }
 
-extern DMA2D_HandleTypeDef hdma2d;
-
 void DMA2D_IRQHandler(void)
 {
   /* LVGL's DMA2D renderer (raw-register, interrupt mode) blocks until this
@@ -210,8 +209,6 @@ void DMA2D_IRQHandler(void)
   DMA2D->IFCR = 0x3FU;
   lv_draw_dma2d_transfer_complete_interrupt_handler();
 }
-
-extern LTDC_HandleTypeDef hltdc;
 
 void LTDC_IRQHandler(void)
 {

@@ -10,8 +10,8 @@
 #include <stddef.h>
 
 /* Use direct (POSIX-like) interface */
-#define CONFIG_YAFFS_DIRECT           1
-#define CONFIG_YAFFS_YAFFS2           1
+#define CONFIG_YAFFS_DIRECT		1
+#define CONFIG_YAFFS_YAFFS2		1
 #define CONFIG_YAFFS_SHORT_NAMES_IN_RAM 1
 
 /* Types and definitions provided by yportenv.h */

@@ -1,9 +1,9 @@
 /**
-  ******************************************************************************
-  * @file    cmsis_os2_compat.c
-  * @brief   Missing CMSIS-RTOS2 APIs required by third-party middleware.
-  ******************************************************************************
-  */
+ ******************************************************************************
+ * @file    cmsis_os2_compat.c
+ * @brief   Missing CMSIS-RTOS2 APIs required by third-party middleware.
+ ******************************************************************************
+ */
 
 #include "cmsis_os2.h"
 
@@ -18,8 +18,8 @@
  */
 osStatus_t osThreadDetach(osThreadId_t thread_id)
 {
-  /* osThreadTerminate() in cmsis_os2.c already releases the thread's stack
-     and TCB for dynamically allocated threads, so there is nothing to do. */
-  (void)thread_id;
-  return osOK;
+    /* osThreadTerminate() in cmsis_os2.c already releases the thread's stack
+       and TCB for dynamically allocated threads, so there is nothing to do. */
+    (void)thread_id;
+    return osOK;
 }
