@@ -29,7 +29,7 @@ typedef struct {
 } TouchPoint_t;
 
 void Touch_Init(void);
-uint8_t Touch_GetPoints(TouchPoint_t *points, uint8_t max_points);
+int8_t Touch_GetPoints(TouchPoint_t *points, uint8_t max_points);
 lv_indev_t * Touch_CreateLvglIndev(void);
 
 #endif /* __TOUCH_H */

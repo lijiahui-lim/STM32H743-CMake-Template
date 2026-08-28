@@ -4,18 +4,34 @@ extern I2C_HandleTypeDef hi2c2;
 
 #define GT1151_ADDR_ALT   0x5D
 
+/* 100kHz I2C, 8+16+1 bits per byte is ~0.25ms; give a generous margin.
+   A dead/busy bus now costs at most this long instead of blocking the UI. */
+#define GT_I2C_TIMEOUT_MS 50
+
+/* With INT idle, the status register is only polled once every
+   TOUCH_POLL_DIV indev reads as a safety net: it catches events if an EXTI
+   edge was missed and re-arms INT (the status read clears the buffer flag). */
+#define TOUCH_POLL_DIV 5
+
 static uint8_t gt_addr = GT1151_ADDR;
+
+/* Set by the EXTI ISR when the GT11xx asserts INT (touch event pending) */
+static volatile bool touch_event;
+
+static uint8_t poll_counter;
+static bool pressed;
+static TouchPoint_t last_point;
 
 static HAL_StatusTypeDef GT1151_WriteReg(uint16_t reg, uint8_t *data, uint16_t len)
 {
     return HAL_I2C_Mem_Write(&hi2c2, gt_addr << 1, reg,
-                             I2C_MEMADD_SIZE_16BIT, data, len, 100);
+                             I2C_MEMADD_SIZE_16BIT, data, len, GT_I2C_TIMEOUT_MS);
 }
 
 static HAL_StatusTypeDef GT1151_ReadReg(uint16_t reg, uint8_t *data, uint16_t len)
 {
     return HAL_I2C_Mem_Read(&hi2c2, gt_addr << 1, reg,
-                            I2C_MEMADD_SIZE_16BIT, data, len, 100);
+                            I2C_MEMADD_SIZE_16BIT, data, len, GT_I2C_TIMEOUT_MS);
 }
 
 static void Touch_Reset(uint8_t int_level)
@@ -43,9 +59,10 @@ static void Touch_Reset(uint8_t int_level)
     HAL_GPIO_WritePin(TOUCH_RST_PORT, TOUCH_RST_PIN, GPIO_PIN_SET);
     HAL_Delay(80);
 
-    /* INT back to floating input */
+    /* INT back to input. Pull-up keeps the line high if no panel is fitted,
+       so touchpad_read() skips I2C entirely in that case. */
     GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
-    GPIO_InitStruct.Pull = GPIO_NOPULL;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
     HAL_GPIO_Init(TOUCH_INT_PORT, &GPIO_InitStruct);
 
     HAL_Delay(50);
@@ -70,9 +87,30 @@ void Touch_Init(void)
         Touch_Reset(1);
         gt_addr = Touch_Probe();
     }
+
+    /* INT as falling-edge EXTI: the GT11xx pulls INT low on every new touch
+       report, so an edge means data is ready to read. */
+    GPIO_InitTypeDef GPIO_InitStruct = {0};
+    GPIO_InitStruct.Pin = TOUCH_INT_PIN;
+    GPIO_InitStruct.Mode = GPIO_MODE_IT_FALLING;
+    GPIO_InitStruct.Pull = GPIO_PULLUP;
+    HAL_GPIO_Init(TOUCH_INT_PORT, &GPIO_InitStruct);
+
+    /* Priority 6: usable with FreeRTOS-from-ISR APIs (max syscall is 5) */
+    HAL_NVIC_SetPriority(EXTI3_IRQn, 6, 0);
+    HAL_NVIC_EnableIRQ(EXTI3_IRQn);
 }
 
-uint8_t Touch_GetPoints(TouchPoint_t *points, uint8_t max_points)
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin)
+{
+    if (GPIO_Pin == TOUCH_INT_PIN)
+        touch_event = true;
+}
+
+/* Reads and parses one touch report. Returns the point count, or -1 on bus
+   error. The status read clears the buffer flag and releases INT, so every
+   successful call re-arms the interrupt. */
+int8_t Touch_GetPoints(TouchPoint_t *points, uint8_t max_points)
 {
     uint8_t status = 0;
     uint8_t buf[GT_REG_POINT_SIZE * TOUCH_MAX_POINTS];
@@ -80,7 +118,7 @@ uint8_t Touch_GetPoints(TouchPoint_t *points, uint8_t max_points)
     uint8_t count;
 
     if (GT1151_ReadReg(GT_REG_STATUS, &status, 1) != HAL_OK)
-        return 0;
+        return -1;
 
     if ((status & 0x80) == 0)
         return 0;
@@ -92,7 +130,7 @@ uint8_t Touch_GetPoints(TouchPoint_t *points, uint8_t max_points)
     if (count > 0)
     {
         if (GT1151_ReadReg(GT_REG_POINT1, buf, count * GT_REG_POINT_SIZE) != HAL_OK)
-            return 0;
+            return -1;
         for (uint8_t i = 0; i < count; i++)
         {
             uint8_t *p = &buf[i * GT_REG_POINT_SIZE];
@@ -112,19 +150,27 @@ static void touchpad_read(lv_indev_t *indev, lv_indev_data_t *data)
 {
     (void)indev;
 
-    TouchPoint_t point;
-    uint8_t count = Touch_GetPoints(&point, 1);
+    /* Read only when INT signaled an event, with a low-rate fallback poll as
+       a safety net. The last known point/state is held between reads, so a
+       stationary finger never flickers. */
+    if (touch_event || ++poll_counter >= TOUCH_POLL_DIV) {
+        TouchPoint_t point;
 
-    if (count > 0)
-    {
-        data->state = LV_INDEV_STATE_PRESSED;
-        data->point.x = point.x;
-        data->point.y = point.y;
+        touch_event = false;
+        poll_counter = 0;
+        int8_t rc = Touch_GetPoints(&point, 1);
+        if (rc > 0) {
+            last_point = point;
+            pressed = true;
+        } else if (rc == 0) {
+            pressed = false;
+        }
+        /* rc < 0: bus error; keep the previous state */
     }
-    else
-    {
-        data->state = LV_INDEV_STATE_RELEASED;
-    }
+
+    data->state = pressed ? LV_INDEV_STATE_PRESSED : LV_INDEV_STATE_RELEASED;
+    data->point.x = last_point.x;
+    data->point.y = last_point.y;
 }
 
 lv_indev_t * Touch_CreateLvglIndev(void)

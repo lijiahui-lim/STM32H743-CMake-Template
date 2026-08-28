@@ -55,7 +55,7 @@ void DebugMon_Handler(void);
 void TIM5_IRQHandler(void);
 void OTG_HS_IRQHandler(void);
 /* USER CODE BEGIN EFP */
-
+void EXTI3_IRQHandler(void);
 /* USER CODE END EFP */
 
 #ifdef __cplusplus

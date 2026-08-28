@@ -22,6 +22,9 @@ static int yaffs_mounted;
 
 static SemaphoreHandle_t yaffs_mutex;
 
+/* Defined in yaffsfs.c but not declared in any upstream header */
+extern void yaffs_remove_device(struct yaffs_dev *dev);
+
 void yaffsfs_Lock(void)
 {
 	if (!yaffs_mutex) {

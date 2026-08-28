@@ -193,6 +193,14 @@ void OTG_HS_IRQHandler(void)
 
 /* USER CODE BEGIN 1 */
 
+/**
+  * @brief This function handles EXTI line3 interrupt (touch INT, PG3).
+  */
+void EXTI3_IRQHandler(void)
+{
+  HAL_GPIO_EXTI_IRQHandler(GPIO_PIN_3);
+}
+
 extern DMA2D_HandleTypeDef hdma2d;
 
 void DMA2D_IRQHandler(void)
