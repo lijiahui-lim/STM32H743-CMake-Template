@@ -8,5 +8,8 @@ build/
 *.su
 .vscode/
 .idea/
+.cache/
+.qoder/
+.mimocode/
 lvgl/
 yaffs2/
